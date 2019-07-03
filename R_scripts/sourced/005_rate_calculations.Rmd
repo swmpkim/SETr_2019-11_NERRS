@@ -1,0 +1,611 @@
+---
+title: "SET Rate Calculations"
+date: "`r Sys.Date()`"
+output: word_document
+always_allow_html: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Everything in this report currently uses ALL reported data values. Quality flags were ignored, which may lead to differences in final numbers once we deal with QA/QC issues.  
+
+Also, be aware that linear models are not appropriate for calculating rates of change at all sites. Use discretion when interpreting these results.  
+
+
+# Setup  
+
+
+
+```{r load_libraries}
+library(knitr)
+library(forcats)
+library(readr)
+library(janitor)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(nlme)
+library(broom)
+library(here)
+library(flextable)
+library(readxl)
+library(lubridate)
+library(leaflet)
+source(here::here('R_scripts', 'sourced', '000_functions.R'))
+```
+
+
+## Read in data and metadata  
+
+This reads in the long dataset, converted from other formats by earlier scripts. It also converts pin heights to mm if they weren't already in those units.    
+
+```{r read_data, warning = TRUE}
+################################################################################
+# get the data in
+################################################################################
+
+# find the folder with processed data
+path <- here::here('data', 'processed')
+
+# in that folder, find the name of the file(s) that ends with 'set.csv'
+filelist <- grep('set_processed.csv$', dir(path), value = TRUE)
+
+
+
+# generate warnings if the folder is empty; if there are multiple matching files, select the first one
+if (length(filelist) == 0) stop("There are no files of the correct name/format (---set_QC.csv) in your processed data folder.")
+
+if (length(filelist) > 1) {
+    warning("There is more than one file of the correct format (---set_QC.csv) in your data folder. The first file alphabetically will be used.")
+    filelist <- filelist[1]
+}
+
+
+
+# generate the full path to the file; read it in and get pin heights to mm
+filename <- paste0(path, "/", filelist)
+dat <- read_csv(filename)
+dat <- height_to_mm(dat)
+
+
+
+###############################################################################
+
+# get rid of any placeholders; make sure set_id is a factor;
+# paste year, month, and day together into "date"
+dat <- dat %>%
+    mutate(date = lubridate::ymd(paste(year, month, day))) %>% 
+    filter(!is.na(date),
+           !is.na(pin_number)) %>%
+    mutate(set_id = as.factor(set_id),
+           arm_position = as.character(arm_position))
+```
+
+
+### Sanity checks  
+
+This analysis was run on `r filelist[1]` on `r Sys.Date()`.  
+
+
+Make sure a metadata file exists:  
+
+```{r read_metadata, warning = TRUE}
+################################################################################
+# get the metadata in
+################################################################################
+
+# find the folder with metadata
+path <- here::here('metadata')
+
+# in that folder, find the name of the file(s) that ends with 'setm.csv'
+filelist <- grep('set_metadata.xls', dir(path), value = TRUE)
+
+# generate warnings if the folder is empty; if there are multiple matching files, select the first one
+if (length(filelist) == 0) stop("There are no files of the correct name/format (---set_metadata.xls or .xlsx) in your metadata folder.")
+
+if (length(filelist) > 1) {
+    warning("There is more than one file of the correct format (---set_metadata.xls or .xlsx) in your metadata folder. The first file alphabetically will be used.")
+    filelist <- filelist[1]
+}
+
+# generate the full path to the file; read it in, clean the names, get rid of empty rows and columns
+filename <- paste0(path, "/", filelist)
+mdat <- read_excel(filename) %>%
+    clean_names() %>%
+    janitor::remove_empty(which = c("rows", "cols"))
+
+###############################################################################
+
+```
+
+
+Make sure the same SET IDs exist in both the data and metadata file:     
+
+```{r verify_setid, warning = TRUE}
+# first pull out set_id from both data frames
+data_setid <- unique(as.character(dat$set_id))
+metadata_setid <- unique(mdat$unique_set_id)
+
+# find set_ids that are in the data, but not in the metadata
+dat_not_m <- setdiff(data_setid, metadata_setid)
+# find set_ids that are in the metadata, but not in the data
+m_not_dat <- setdiff(metadata_setid, data_setid)
+
+if (length(dat_not_m) > 0) {
+    toprint <- paste(dat_not_m, collapse = ", ")
+    warning(paste0("The following SET IDs exist in your data, but not in your metadata: ", toprint))
+}
+
+if (length(m_not_dat) > 0) {
+    toprint <- paste(m_not_dat, collapse = ", ")
+    warning(paste0("The following SET IDs exist in your metadata, but not in your data: ", toprint))
+}
+
+if (length(dat_not_m) + length(m_not_dat) == 0) {
+    print("SET IDs match in your data and metadata files.")
+}
+
+# cleanup
+rm(dat_not_m, m_not_dat, metadata_setid, data_setid, filelist, filename, path)
+```
+
+
+Read in general sea-level rates sheet and pull out the rate that matches the reserve.  
+
+```{r read_slr}
+slr_path <- here::here('metadata')
+slr_file <- paste0(slr_path, "/slr_rates.csv")
+slr_rates <- read_csv(slr_file) %>%
+    clean_names() %>%
+    janitor::remove_empty(which = c("rows", "cols"))
+```
+
+Pull out the information relevant to the current reserve. Assign relevant values to objects and print out the table with information about the site.   
+
+```{r verify_slr, warning = TRUE}
+res_to_match <- unique(dat$reserve)
+
+if (res_to_match %in% unique(slr_rates$reserve)) {
+    slr_res <- slr_rates %>%
+        filter(reserve == res_to_match) %>%
+        select(-link)
+    slr <- slr_res$slr_rate_mm_yr
+    slr_ci <- slr_res$x95_percent_ci
+} else {warning("This reserve does not have an entry in the sea level rise rates file. Please check metadata/slr_rates.csv and make sure your reserve is present.")}
+```
+
+
+
+# Background information  
+
+
+## Reserve-level  
+
+
++  Local rate of sea level change is **`r slr`** +/- **`r slr_ci`** mm/yr.  
++  This rate is reported by `r slr_res$nearest_nwlon_station`, NWLON station number `r as.character(slr_res$nwlon_station_number)` based on data from *`r slr_res$data_start`* to *`r slr_res$data_end`*.
+  
+
+## SET-level characteristics  
+
+### setting  
+
+
+```{r}
+mdat %>%
+    select(unique_set_id, set_type, latitude_dec_deg, 
+           longitude_dec_deg, co_dominant_species1) %>% 
+  setNames(c("SET_ID", "Type", "Lat", "Long", "Main_Veg")) %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  autofit()
+```
+
+
+
+### sampling information  
+
+```{r}
+dat %>% 
+  group_by(set_id) %>% 
+  summarize(first_sampled = min(date),
+            last_sampled = max(date),
+            years_sampled = as.double(max(date) - min(date)) / 365.25,
+            sample_events = length(unique(date))) %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  autofit()
+```
+
+
+Still on wish list to include:  
+
++  NAVD88 elevation (and year determined)  
++  Distance from closest water body 
+
+
+***
+
+# Rate Calculations  
+
+These rates were generated using linear mixed models. See Zuur et al. 2009 and Cahoon et al. 2019 for details.
+
+Cahoon, D.R., Lynch, J.C., Roman, C.T. et al. Estuaries and Coasts (2019) 42: 1. https://doi.org/10.1007/s12237-018-0448-x  
+
+Zuur, A.F., E.N. Ieno, N.J. Walker, A.A. Saveliev, and G.M. Smith. 2009. Mixed effects models and extensions in ecology with R. New York: Springer.  
+
+The following is directly excerpted from Cahoon et al. 2019:
+
+> Linear mixed models (LMMs, Zuur et al. 2009) were chosen
+to analyze the surface elevation data. LMMs are ideal for
+analyzing the nested longitudinal data that is produced by
+the SET device. Rather than averaging the pin heights from
+each SET prior to analysis, the measurements from each pin
+are used as separate replicates. This preserves the variation
+found within each SET and also maximizes statistical power.
+Effects which are specific to each SET, direction within each
+SET, and pin within each direction are treated as random
+effects, which account for the lack of independence among
+pins on the same SET. Analysis was performed using
+mixed-effect models in the nlme package (Pinheiro et al.
+2016) in R version 3.3.2 (R Core Team 2016).
+Data from each of the five sites were analyzed separately.
+Pin height (m, NAVD88) served as the response variable, and
+the fixed effects were the number of days since the initial
+reading was taken. To account for a potential reduction of
+independence among pins on the same SET, the model included
+a random slope and intercept for each pin, nested in the SET
+position on the benchmark (typically, four positions were read
+during each sampling event), nested in the SET. This model
+was first fit using maximum likelihood. It was then compared
+to a model with identical random effects but an intercept-only
+fixed effect using the corrected form of Akaike’s information
+criterion (AICc, Akaike 1974, Burnham and Anderson 2004).
+If the intercept-only model was superior, this indicated that
+there is no trend in elevation over time. The model including
+a trend through time was then refit using restricted maximum
+likelihood to estimate the coefficients of the regression. For
+comparative purposes, this was done even in cases where the
+intercept-only model was superior.
+
+
+In our case, we have, for each SET:  
+
++  **response variable:** pin_height  
++  **fixed effect:** date  
++  **random effects:** arm_position, pin_number  (note, these are nested)  
+
+## Rates of change  
+
+These rates were generated using the `lme()` function in the `nlme` package. Confidence intervals were generated using the `intervals()` function, also in the `nlme` package. 
+
+All calculations generated output in *mm/day* and were converted to *mm/yr* by multiplying by 365.25 (this accounts for leap years).    
+
+```{r calc_lmm}
+models2 <- dat %>%
+    group_by(reserve, set_id) %>%
+    do(mod = lme(pin_height ~ date, data = ., random = ~1|arm_position/pin_number, na.action = na.omit))
+
+lmm_out <- models2 %>% 
+  mutate(rate = intervals(mod, which = "fixed")$fixed["date", 2] * 365.25,
+         CI_low = intervals(mod, which = "fixed")$fixed["date", 1] * 365.25,
+         CI_high = intervals(mod, which = "fixed")$fixed["date", 3] * 365.25) %>% 
+  select(-mod)
+
+lmm_out %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  autofit()
+```
+
+
+
+### Additional model diagnostics  
+
+```{r calc_lmm_other}
+glance(models2, mod) %>%
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+
+### Combine information from rate calculations, metadata, and SLR into one file  
+
+```{r}
+# pick out relevant fields from the metadata to be used for mapping
+mdat_sub <- mdat %>% 
+  select(unique_set_id, user_friendly_set_name, reserve, latitude_dec_deg, longitude_dec_deg)
+
+# join that to the rates generated by the model output above
+rate_summary <- left_join(lmm_out, mdat_sub, by = c("reserve" = "reserve", "set_id" = "unique_set_id"))
+
+# now add in slr info, and also calculate the lower and upper CI limits for SLR
+rate_summary <- left_join(rate_summary, slr_rates, by = c("reserve" = "reserve")) %>% 
+  rename(slr_rate = slr_rate_mm_yr) %>% 
+  mutate(slr_CI_low = slr_rate - x95_percent_ci,
+         slr_CI_high = slr_rate + x95_percent_ci,
+         set_slr_ratio = rate / slr_rate) %>% 
+  select(reserve, set_id, rate, CI_low, CI_high, slr_rate, slr_CI_low, slr_CI_high, everything())
+
+# write that to a csv for use in mapping script
+write.csv(rate_summary, 
+          here::here("data", "intermediate", "rate_summary.csv"),
+          row.names = FALSE)
+```
+
+
+
+
+```{r slr_comp_assignment}
+rates_slr_comp <- rate_summary %>%
+    mutate(dir_0 = case_when(CI_high < 0 ~ "dec_sig",
+                             CI_low > 0  ~ "inc_sig",
+                             rate < 0 ~ "dec_nonsig",
+                             rate > 0 ~ "inc_nonsig",
+                             TRUE ~ "nonsig"),
+           dir_slr = case_when(CI_high < slr_CI_low ~ "dec_sig",
+                               CI_low > slr_CI_high  ~ "inc_sig",
+                               rate < slr_rate ~ "dec_nonsig",
+                               rate > slr_rate ~ "inc_nonsig",
+                               TRUE ~ "nonsig")) %>% 
+  select(reserve, set_id, rate, CI_low, CI_high, set_slr_ratio, dir_0, dir_slr)
+```
+
+***
+***
+
+
+# Increasing/Decreasing (Comparison to 0)  
+
+The following tables break the SETs into groups where the rate of SET elevation change is *lower than* / *higher than* / *not different from* 0. *Lower than* and *higher than* tables imply that the 95% confidence intervals for the SET's rate of change do not include 0. *Not different from* means that 0 *is* included.  
+
+
+<br>
+
+***
+
+## SET Elevation Change < 0 mm/yr  
+
+
+```{r zero_comp_lower}
+rates_slr_comp %>%
+    filter(dir_0 == "dec_sig") %>%
+    select(-dir_0, -dir_slr, -set_slr_ratio) %>% 
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+<br>
+
+***
+
+## SET Elevation Change > 0 mm/yr  
+
+
+```{r zero_comp_higher}
+rates_slr_comp %>%
+    filter(dir_0 == "inc_sig") %>%
+    select(-dir_0, -dir_slr, -set_slr_ratio) %>% 
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+<br>
+
+***
+
+## SET Elevation Change 95% CI Includes 0 mm/yr  
+
+
+```{r zero_comp_same}
+rates_slr_comp %>%
+    filter(dir_0 %in% c("dec_nonsig", "inc_nonsig")) %>%
+    select(-dir_0, -dir_slr, -set_slr_ratio) %>% 
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+
+***
+***
+
+
+# Sea Level Rise Comparisons  
+
+The long-term local rate of sea level rise is **`r slr` +/- `r slr_ci` mm/yr** .  
+
+This rate is reported by `r slr_res$nearest_nwlon_station`, NWLON station number `r as.character(slr_res$nwlon_station_number)` based on data from *`r slr_res$data_start`* to *`r slr_res$data_end`*.  
+
+The following tables break the SETs into groups where the rate of SET elevation change is *lower than* / *higher than* / *not different from* this SLR rate. *Lower than* and *higher than* tables imply that 95% confidence intervals do not overlap between the SET and SLR. *Not different from* means that confidence intervals *do* overlap.  
+
+ 
+<br>
+
+<br>
+
+***
+
+## SET Elevation Change < SLR; CIs don't overlap  
+
+
+```{r slr_comp_lower}
+rates_slr_comp %>%
+    filter(dir_slr == "dec_sig") %>%
+    select(-dir_0, -dir_slr) %>% 
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+<br>
+
+
+***
+
+## SET Elevation Change > SLR; CIs don't overlap
+
+
+```{r slr_comp_higher}
+rates_slr_comp %>%
+    filter(dir_slr == "inc_sig") %>%
+    select(-dir_0, -dir_slr) %>% 
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+<br>
+
+***
+
+## SET Elevation Change and SLR CIs overlap  
+
+
+```{r slr_comp_same}
+rates_slr_comp %>%
+    filter(dir_slr %in% c("dec_nonsig", "inc_nonsig")) %>%
+    select(-dir_0, -dir_slr) %>% 
+    flextable() %>% 
+    theme_booktabs() %>% 
+    autofit()
+```
+
+
+***
+***
+
+
+## Graphical Comparison to Sea Level Rise and 0  
+
+
+```{r plot_slr_ci_lmm, fig.width = 7, fig.height = 6}
+ggplot() +
+    geom_blank(data = lmm_out, 
+               aes(x = set_id, 
+                   y = rate)) +
+    geom_ribbon(aes(x = 0:(nrow(lmm_out)+1), 
+                    ymin = slr-slr_ci, 
+                    ymax = slr+slr_ci), 
+                fill = "navyblue", 
+                alpha = 0.1) +
+    geom_hline(aes(yintercept = slr), 
+               col = "navyblue", 
+               size = 1, 
+               alpha = 0.9) +
+    geom_hline(aes(yintercept = 0), 
+               col = "gray70") +
+    geom_errorbar(data = lmm_out, 
+                  aes(x = set_id, 
+                      ymin = CI_low, 
+                      ymax = CI_high), 
+                  col = "gray55", 
+                  size = 1) +
+    geom_point(data = lmm_out, 
+               aes(x = set_id, 
+                   y = rate), 
+               size = 3, 
+               col = "red3") +
+    theme_classic() + 
+    labs(title = "Elevation Change, 95% Confidence Intervals (LMM)", 
+         subtitle = paste0("Local SLR in blue: ", slr, " +/- ", slr_ci, " mm/yr"), 
+         x = "SET", 
+         y = "Rate of change (mm/yr)") +
+    coord_flip()
+```
+
+
+***
+
+In order, according to specifications in the metadata; and labeled with user-friendly names. Note that no plot will be produced if there are any NAs in the metadata fields `numerical_order` or `user_friendly_set_name`.    
+
+```{r plot_slr_ci_lmm_ordered, fig.width = 7, fig.height = 6}
+# only run this chunk if numerical order and user friendly names are specified for all SETs
+
+if(sum(is.na(mdat$numerical_order)) + sum(is.na(mdat$user_friendly_set_name)) == 0){
+  # make the set id a factor
+  lmm_out_ordered <- mdat %>% 
+    select(unique_set_id, user_friendly_set_name, numerical_order) %>%
+    left_join(lmm_out, ., by = c("set_id" = "unique_set_id")) 
+  
+  a <- forcats::fct_reorder(lmm_out_ordered$user_friendly_set_name,
+                            desc(lmm_out_ordered$numerical_order))
+  b <- forcats::fct_reorder(lmm_out_ordered$set_id,
+                            desc(lmm_out_ordered$numerical_order))
+  
+  lmm_out_ordered$user_friendly_set_name <- a
+  lmm_out_ordered$set_id2 <- b
+  
+  ggplot() +
+    geom_blank(data = lmm_out_ordered, 
+               aes(x = user_friendly_set_name, 
+                   y = rate)) +
+    geom_ribbon(aes(x = 0:(nrow(lmm_out_ordered)+1), 
+                    ymin = slr-slr_ci, 
+                    ymax = slr+slr_ci), 
+                fill = "navyblue", 
+                alpha = 0.1) +
+    geom_hline(aes(yintercept = slr), 
+               col = "navyblue", 
+               size = 1, 
+               alpha = 0.9) +
+    geom_hline(aes(yintercept = 0), 
+               col = "gray70") +
+    geom_errorbar(data = lmm_out_ordered, 
+                  aes(x = user_friendly_set_name, 
+                      ymin = CI_low, 
+                      ymax = CI_high), 
+                  col = "gray55", 
+                  size = 1) +
+    geom_point(data = lmm_out_ordered, 
+               aes(x = user_friendly_set_name, 
+                   y = rate), 
+               size = 3, 
+               col = "red3") +
+    theme_classic() + 
+    labs(title = "Elevation Change, 95% Confidence Intervals (LMM)", 
+         subtitle = paste0("Local SLR in blue: ", slr, " +/- ", slr_ci, " mm/yr"), 
+         x = "SET", 
+         y = "Rate of change (mm/yr)") +
+    coord_flip()
+}
+```
+
+
+***
+
+### Cumulative change snapshot  
+
+```{r, fig.width = 7, fig.height = 7}
+dat_cumu <- calc_change_cumu(dat)
+plot_cumu_set(dat_cumu$set)
+```
+
+
+
+## MAPS  
+
+```{r}
+source(here::here("R_scripts", "sourced", "006_map_making_static.R"))
+```
+
+
+### Comparisons to 0  
+
+```{r}
+m0
+```
+
+### Comparisons to SLR  
+
+```{r}
+mSLR
+```
+

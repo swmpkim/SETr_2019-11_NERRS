@@ -1,0 +1,10 @@
+Reserve,Nearest NWLON station,Distance to NWLON Station,NWLON Station Number,SLR rate (mm/yr),+/- (95% CI),data start,data end,link
+APA,"Apalachicola, Florida",,8728690,2.23,0.64,1967,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=8728690#tab50yr
+CBV,,,,4.62,,,,
+DEL,"Lewes, Delaware",,8557380,3.44,0.24,1919,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=8557380
+GND,"Dauphin Island, Alabama",,8735180,3.61,0.59,1966,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=8735180
+PDB,"Friday Harbor, Washington",35km,9449880,1.19,0.27,1934,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=9449880
+SOS,"Charleston, Oregon",1-8km (depending on site),9432780,1.12,0.77,1970,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=9432780
+WQB,"Woods Hole, Massachusetts",14 km,8447930,2.86,0.17,1932,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=8447930
+GRB,"Boston, Massachusetts",77km (nothing closer with a recent record),8443970,2.82,0.16,1921,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=8443970
+AAA,"Dauphin Island, Alabama",,8735180,3.61,0.59,1966,2017,https://tidesandcurrents.noaa.gov/sltrends/sltrends_station.shtml?id=8735180
