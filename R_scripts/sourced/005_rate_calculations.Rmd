@@ -11,7 +11,7 @@ editor_options:
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 ```
 
-Everything in this report currently uses ALL reported data values. Quality flags were ignored, which may lead to differences in final numbers once we deal with QA/QC issues.  
+In this report, the user may have chosen to exclude data associated with certain QA/QC codes. Any values that have been removed are listed in the appropriate section below.    
 
 Also, be aware that linear models are not appropriate for calculating rates of change at all sites. Use discretion when interpreting these results.  
 
@@ -35,7 +35,10 @@ library(flextable)
 library(readxl)
 library(lubridate)
 library(leaflet)
+# load functions
 source(here::here('R_scripts', 'sourced', '000_functions.R'))
+# load user options
+source(here::here('R_scripts', 'sourced', '001_user_options.R'))
 ```
 
 
@@ -44,16 +47,11 @@ source(here::here('R_scripts', 'sourced', '000_functions.R'))
 This reads in the long dataset, converted from other formats by earlier scripts. It also converts pin heights to mm if they weren't already in those units.    
 
 ```{r read_data, warning = TRUE}
-################################################################################
-# get the data in
-################################################################################
-
 # find the folder with processed data
 path <- here::here('data', 'processed')
 
-# in that folder, find the name of the file(s) that ends with 'set.csv'
-filelist <- grep('set_processed.csv$', dir(path), value = TRUE)
-
+# in that folder, find the name of the file(s) that ends with 'set_processed.csv'
+filelist <- dir(path, pattern = "set_processed.csv$")
 
 
 # generate warnings if the folder is empty; if there are multiple matching files, select the first one
@@ -73,8 +71,6 @@ dat <- height_to_mm(dat)
 
 
 
-###############################################################################
-
 # get rid of any placeholders; make sure set_id is a factor;
 # paste year, month, and day together into "date"
 dat <- dat %>%
@@ -86,6 +82,40 @@ dat <- dat %>%
 ```
 
 
+## QA/QC codes  
+
+Use the *user_defined_inputs* spreadsheet to find qa/qc codes that the user wants to have removed (designated in that sheet with "-3" to be consistent with the SWMP "reject" flagging). Report those values and then turn them into NAs.
+
+Note that this code will look for an EXACT match. e.g., if "LHE" is specified for removal, only values with "LHE" will be removed. "LHE CB" and "CRM LHE" will *not* be removed. To remove a combination of codes, a new line may need to be created in the *qaqc_codes* tab of the input spreadsheet.  
+
+```{r}
+if (excl_exist) {
+  # find the rows to exclude - either arm or pin codes match
+  pin_to_excl <- which(dat$qaqc_code %in% codes_to_exclude)
+  arm_to_excl <- which(dat$arm_qaqc_code %in% codes_to_exclude)
+  
+  # make a data frame of the excluded ones and print it out
+  to_excl <- c(pin_to_excl, arm_to_excl)
+  excluded <- dat[to_excl, ]
+  
+  
+  excluded %>% 
+    select(set_id, date, 
+           arm = arm_position, 
+           arm_code = arm_qaqc_code, 
+           pin_number, qaqc_code, pin_height) %>% 
+    knit_print()
+  
+
+  # turn the heights into NAs
+  dat$pin_height[to_excl] <- NA 
+  
+  # clean up
+  # rm(list = c("excluded", "arm_to_excl", "pin_to_excl", "to_excl"))
+}
+```
+
+
 ### Sanity checks  
 
 This analysis was run on `r filelist[1]` on `r Sys.Date()`.  
@@ -94,15 +124,11 @@ This analysis was run on `r filelist[1]` on `r Sys.Date()`.
 Make sure a metadata file exists:  
 
 ```{r read_metadata, warning = TRUE}
-################################################################################
-# get the metadata in
-################################################################################
-
 # find the folder with metadata
 path <- here::here('metadata')
 
 # in that folder, find the name of the file(s) that ends with 'setm.csv'
-filelist <- grep('set_metadata.xls', dir(path), value = TRUE)
+filelist <- dir(path, pattern = 'set_metadata.xls')
 
 # generate warnings if the folder is empty; if there are multiple matching files, select the first one
 if (length(filelist) == 0) stop("There are no files of the correct name/format (---set_metadata.xls or .xlsx) in your metadata folder.")
@@ -115,11 +141,8 @@ if (length(filelist) > 1) {
 # generate the full path to the file; read it in, clean the names, get rid of empty rows and columns
 filename <- paste0(path, "/", filelist)
 mdat <- read_excel(filename) %>%
-    clean_names() %>%
+    janitor::clean_names() %>%
     janitor::remove_empty(which = c("rows", "cols"))
-
-###############################################################################
-
 ```
 
 
@@ -149,16 +172,26 @@ if (length(dat_not_m) + length(m_not_dat) == 0) {
     print("SET IDs match in your data and metadata files.")
 }
 
+# go ahead and order the set_ids in dat and unique_set_id in mdat by the metadata's numerical_order, if available
+if (!anyNA(mdat$numerical_order)){
+  mdat_sub <- select(mdat, unique_set_id, numerical_order)
+  dat <- left_join(dat, mdat_sub, by = c("set_id" = "unique_set_id")) %>% 
+    mutate(set_id = fct_reorder(set_id, numerical_order)) %>% 
+    select(-numerical_order)
+  mdat <- mdat %>% 
+    mutate(unique_set_id = fct_reorder(unique_set_id, numerical_order))
+}
+
 # cleanup
-rm(dat_not_m, m_not_dat, metadata_setid, data_setid, filelist, filename, path)
+rm(dat_not_m, m_not_dat, mdat_sub, metadata_setid, data_setid, filelist, filename, path)
 ```
+
 
 
 Read in general sea-level rates sheet and pull out the rate that matches the reserve.  
 
 ```{r read_slr}
-slr_path <- here::here('metadata')
-slr_file <- paste0(slr_path, "/slr_rates.csv")
+slr_file <- here::here('metadata', 'slr_rates.csv')
 slr_rates <- read_csv(slr_file) %>%
     clean_names() %>%
     janitor::remove_empty(which = c("rows", "cols"))
@@ -195,10 +228,12 @@ if (res_to_match %in% unique(slr_rates$reserve)) {
 ### setting  
 
 
-```{r}
-mdat %>%
-    select(unique_set_id, set_type, latitude_dec_deg, 
+```{r set_info_table}
+# print the table
+mdat %>% 
+  select(unique_set_id, set_type, latitude_dec_deg, 
            longitude_dec_deg, co_dominant_species1) %>% 
+  arrange(unique_set_id) %>% 
   setNames(c("SET_ID", "Type", "Lat", "Long", "Main_Veg")) %>% 
   flextable() %>% 
   theme_booktabs() %>% 
@@ -209,7 +244,7 @@ mdat %>%
 
 ### sampling information  
 
-```{r}
+```{r sampling_info_table}
 dat %>% 
   group_by(set_id) %>% 
   summarize(first_sampled = min(date),
@@ -519,6 +554,9 @@ ggplot() +
          x = "SET", 
          y = "Rate of change (mm/yr)") +
     coord_flip()
+
+out_file <- here::here("R_output", "figures", "summary_plots", "summary_plot.png")
+ggsave(out_file)
 ```
 
 
@@ -543,7 +581,7 @@ if(sum(is.na(mdat$numerical_order)) + sum(is.na(mdat$user_friendly_set_name)) ==
   lmm_out_ordered$user_friendly_set_name <- a
   lmm_out_ordered$set_id2 <- b
   
-  ggplot() +
+  p <- ggplot() +
     geom_blank(data = lmm_out_ordered, 
                aes(x = user_friendly_set_name, 
                    y = rate)) +
@@ -575,6 +613,11 @@ if(sum(is.na(mdat$numerical_order)) + sum(is.na(mdat$user_friendly_set_name)) ==
          x = "SET", 
          y = "Rate of change (mm/yr)") +
     coord_flip()
+  
+  out_file <- here::here("R_output", "figures", "summary_plots", "summary_plot_friendlier.png")
+  ggsave(out_file, p)
+  
+  print(p)
 }
 ```
 
@@ -585,7 +628,10 @@ if(sum(is.na(mdat$numerical_order)) + sum(is.na(mdat$user_friendly_set_name)) ==
 
 ```{r, fig.width = 7, fig.height = 7}
 dat_cumu <- calc_change_cumu(dat)
-plot_cumu_set(dat_cumu$set)
+plot_cumu_set(dat_cumu$set, columns = opts_long$multi_cols)
+
+out_file <- here::here("R_output", "figures", "cumu_change_plots", "cumu_change.png")
+ggsave(out_file)
 ```
 
 
