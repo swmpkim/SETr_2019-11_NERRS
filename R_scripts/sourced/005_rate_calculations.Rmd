@@ -666,12 +666,12 @@ source(here::here("R_scripts", "sourced", "006_map_making_static.R"))
 ### Comparisons to 0  
 
 ```{r, eval = enough_dat}
-m0
+# m0
 ```
 
 ### Comparisons to SLR  
 
 ```{r, eval = enough_dat}
-mSLR
+# mSLR
 ```
 
