@@ -3,7 +3,7 @@
 # all SETs in one table
 
 
-#### INSTRUCTIONS ####
+#### INSTRUCTIONS #############################################################
 
 # 1:
 # Re-start your R session to make sure there's no interference:
@@ -17,12 +17,16 @@
 # Run it: either using the "Run" button in the upper right corner
 # or the keyboard shortcut Ctrl/Cmd + Enter
 
-
+###############################################################################
 
 
 # this script is modified from SETr_data_transformations/R/01_NEW_wide_to_long.R
 # it has been made to automatically select the excel file that ends with set.xlsx
 # and transform it into the longer format that can be used in the downstream scripts
+
+## as of 2019-09-16, the pivoting specs have changed to match tidyr v. 1.0.0:
+# set up specs with build_longer_spec  rather than pivot_longer_spec
+# perform pivot with pivot_longer_spec rather than pivot_longer
 
 # this script has also been moved to the top R level because it has to be run before anything else can be done.
 
@@ -55,7 +59,7 @@ mismatches <- dat$set_id != dat$sheet
 
 # make this whole script stop if something doesn't match
 if(sum(mismatches) > 0){
-        print(dat[mismatches, c("sheet", "set_id", "date", "arm_position")])
+        print(dat[mismatches, c("sheet", "set_id", "year", "month", "arm_position")])
         stop("There are SET IDs that do not match the sheet name. Please check and correct the rows printed above before proceeding.")
         }else{
 # if no problem, do everything else
@@ -78,7 +82,7 @@ names(dat_formatted) <- gsub("height_", "height", names(dat_formatted))
 
 # set up to pivot
 spec <- dat_formatted %>% 
-        pivot_longer_spec(
+        build_longer_spec(
                 cols = starts_with("pin1_height"):"pin9_qaqccode",
                 names_to = c("pinnumber", ".value"),
                 names_sep = "_"
@@ -86,7 +90,7 @@ spec <- dat_formatted %>%
 
 # pivot to longer
 dat_long <- dat_formatted %>% 
-        pivot_longer(spec = spec)
+        pivot_longer_spec(spec = spec)
 
 # put underscores back in the names
 names(dat_long) <- gsub("pin", "pin_", names(dat_long))
@@ -106,5 +110,7 @@ file_out <- paste0(substr(file_in, 1, nchar(file_in)-4), "_processed.csv")
 out_path <- here::here("data", "processed")
 file_out <- paste0(out_path, "/", file_out)
 write.csv(dat_long, file_out, row.names = FALSE)
+
+message("\n \nDone! Move on to other scripts. \n \n")
         }
 

@@ -84,7 +84,7 @@ m0 <- leaflet(to_map,
 
 # save it out
 file_path1 <- here::here("R_output", "figures", "maps", "map_0.png")
-# mapview::mapshot(m0, file = file_path1)
+mapview::mapshot(m0, file = file_path1)
 
 
 
@@ -120,4 +120,4 @@ mSLR <- leaflet(to_map,
 
 # save it out
 file_path2 <- here::here("R_output", "figures", "maps", "map_SLR.png")
-# mapview::mapshot(mSLR, file = file_path2)
+mapview::mapshot(mSLR, file = file_path2)

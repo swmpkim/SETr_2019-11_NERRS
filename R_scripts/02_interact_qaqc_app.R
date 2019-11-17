@@ -25,6 +25,7 @@ library(here)
 library(shiny)
 library(plotly)
 library(DT)
+library(janitor)
 source(here::here('R_scripts', 'sourced', '000_functions.R'))
 
 
@@ -66,8 +67,20 @@ if (sum(class(dat$date) %in% c("datetime", "POSIXct", "POSIXlt")) > 0)
 
 # cumulative change
 cumu_out <- calc_change_cumu(dat)
+cumu_out_set <- cumu_out$set
 # incremental change
 incr_out <- calc_change_incr(dat)
+
+
+###############################################################################
+# reshape incremental change so it looks more like the NPS spreadsheet,
+# with date as column headers and one row per pin - 36 rows per set
+# would be great to conditionally format cells outside the threshold, dynamically
+###############################################################################
+incr_wide <- incr_out$pin %>% 
+    select(set_id, arm_position, pin_number, date, incr) %>% 
+    mutate(date = as.character(date)) %>% 
+    spread(key = date, value = incr)
 
 
 ###############################################################################
@@ -155,33 +168,51 @@ ui <- fluidPage(
                                              step = 5),
                                  br(),
                                  plotlyOutput(outputId = "plotly_incr_pin"),
+                                 
                                  br(), br(),
                                  textOutput(outputId = "count_incr_pin"),
+                                 
                                  checkboxInput(inputId = "incr_table",
                                                label = "Show these points in a table",
                                                value = FALSE),
                                  conditionalPanel(condition = "input.incr_table == true",
-                                                  
-                                 br(), 
-                                 DT::dataTableOutput(outputId = "tbl_incr_pin")),
+                                                  br(), 
+                                                  DT::dataTableOutput(outputId = "tbl_incr_pin")
+                                 ),
+                                 
+                                 br(),
+                                 
+                                 checkboxInput(inputId = "incr_tbl_wide",
+                                               label = "View ALL incremental changes for this SET, with each pin on a row and each date as a column",
+                                               value = FALSE),
+                                 conditionalPanel(condition = "input.incr_tbl_wide == true",
+                                                  br(),
+                                                  DT::dataTableOutput(outputId = "tbl_incr_wide")
+                                                  ),
                                  br(), br(),
                                  plotlyOutput(outputId = "plotly_incr_arm")
+                                 
+                                 
                         ),
                         
                         tabPanel("Cumulative Calcs", value = 3,
                                  br(),
-                                 selectInput(inputId = "columns", 
-                                             label = strong("Choose # columns for graph below"),
-                                             choices = c(1, 2, 3, 4, 5),
-                                             selected = 4
-                                 ),
                                  # choose whether to overlay regression or not
                                  checkboxInput(inputId = "cumu_smooth", 
                                                label = strong("Overlay Linear Regression"),
                                                value = FALSE
                                  ),
+                                 # make plots
+                                 plotlyOutput(outputId = "plotly_cumu_set_sub",
+                                              height = 400),
+                                 # choose number of columns for complete plot
+                                 selectInput(inputId = "columns", 
+                                             label = strong("Choose # columns for graph below"),
+                                             choices = c(1, 2, 3, 4, 5),
+                                             selected = 4
+                                 ),
                                  plotlyOutput(outputId = "plotly_cumu_set",
-                                              height = 500)
+                                              height = 600)
                         )
             )
         )
@@ -213,6 +244,17 @@ server <- function(input, output) {
                    date <= as.Date(input$date[2]))
     })
     
+    # subset cumulative data, reactively  
+    cumu_out_set_sub <- reactive({
+        req(input$SET)
+        req(input$date)
+        cumu_out_set %>% 
+            filter(set_id == input$SET,
+                   date >= as.Date(input$date[1]),
+                   date <= as.Date(input$date[2])) %>% 
+            mutate(mean_cumu = mean_cumu - mean_cumu[1])
+    })
+    
     # subset incremental change list, reactively
     incr_out_sub <- reactive({
         req(input$date)
@@ -223,6 +265,14 @@ server <- function(input, output) {
         }
         # apply that function to each piece of the incr_out list
         lapply(incr_out, datesub)
+    })
+    
+    
+    # subset the incr_wide data frame
+    # only by SET; keep all dates included
+    incr_wide_sub <- reactive({
+        req(input$SET)
+        incr_wide[incr_wide$set_id == input$SET, ]
     })
     
    
@@ -301,6 +351,22 @@ server <- function(input, output) {
     })
     
     
+    # make the table of incremental changes that looks like the NPS spreadsheet
+    output$tbl_incr_wide <- DT::renderDataTable({
+        incrdat <- incr_wide_sub()
+        incrdat <- janitor::remove_empty(incrdat, which = c("rows", "cols"))
+        DT::datatable(data = incrdat, 
+                      rownames = FALSE,
+                      options = list(pageLength = 36,
+                                     autoWidth = TRUE,
+                                     columnDefs = list(list(
+                                         className = 'dt-center', 
+                                         targets = "_all"))
+                      )
+        )
+    })
+    
+    
     # create plotly plot of incremental change by arm
     output$plotly_incr_arm <- renderPlotly({
         req(input$SET)
@@ -326,6 +392,22 @@ server <- function(input, output) {
             ylab("mm")
             
         b
+    })
+    
+    
+    # create plotly plot of cumulative change by INDIVIDUAL SET
+    output$plotly_cumu_set_sub <- renderPlotly({
+        req(input$SET)
+        req(input$date)
+        c <- plot_cumu_set(data = cumu_out_set_sub(),
+                           columns = 1, 
+                           pointsize = input$ptsize_single,
+                           smooth = input$cumu_smooth,
+                           lty_smooth = 1) +
+            ggtitle("Cumulative change since first selected date") +
+            ylab("mm")
+        
+        c
     })
     
     
